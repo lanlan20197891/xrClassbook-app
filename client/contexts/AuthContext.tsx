@@ -1,55 +1,105 @@
-// @ts-nocheck
-/**
- * 通用认证上下文
- *
- * 基于固定的 API 接口实现，可复用到其他项目
- * 其他项目使用时，只需修改 @api 的导入路径指向项目的 api 模块
- *
- * 注意：
- * - 如果需要登录/鉴权场景，请扩展本文件，完善 login/logout、token 管理、用户信息获取与刷新等逻辑
- * - 将示例中的占位实现替换为项目实际的接口调用与状态管理
- */
-import React, { createContext, useContext, ReactNode } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-interface UserOut {
+const API_BASE = process.env.EXPO_PUBLIC_BACKEND_BASE_URL || '';
 
+interface UserData {
+  id: number;
+  username: string;
+  userGroup: string;
+  headUrl: string;
+  userData: Record<string, any>;
 }
 
 interface AuthContextType {
-  user: UserOut | null;
+  user: UserData | null;
   token: string | null;
   isAuthenticated: boolean;
   isLoading: boolean;
-  login: (token: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<{ ok: boolean; msg?: string }>;
   logout: () => Promise<void>;
-  updateUser: (userData: Partial<UserOut>) => void;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
-  const value: AuthContextType = {
-    user: null,
-    token: null,
-    isAuthenticated: false,
-    isLoading: false,
+  const [user, setUser] = useState<UserData | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
-    // 登录逻辑，根据项目实际情况实现
-    login: async (token: string) => {}, // eslint-disable-line @typescript-eslint/no-empty-function
+  useEffect(() => {
+    (async () => {
+      try {
+        const savedToken = await AsyncStorage.getItem('auth_token');
+        if (savedToken) {
+          const res = await fetch(`${API_BASE}/api/v1/auth/me`, {
+            headers: { Authorization: `Bearer ${savedToken}` },
+          });
+          const json = await res.json();
+          if (json.ok) {
+            setToken(savedToken);
+            setUser(json.data);
+          } else {
+            await AsyncStorage.removeItem('auth_token');
+          }
+        }
+      } catch {
+        // ignore
+      } finally {
+        setIsLoading(false);
+      }
+    })();
+  }, []);
 
-    // 登出逻辑，根据项目实际情况实现
-    logout: async () => {}, // eslint-disable-line @typescript-eslint/no-empty-function
+  const login = useCallback(async (username: string, password: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        setToken(json.data.token);
+        setUser(json.data.user);
+        await AsyncStorage.setItem('auth_token', json.data.token);
+        return { ok: true };
+      }
+      return { ok: false, msg: json.msg };
+    } catch {
+      return { ok: false, msg: '网络错误' };
+    }
+  }, []);
 
-    // 更新用户信息，根据项目实际情况实现
-    updateUser: () => {}, // eslint-disable-line @typescript-eslint/no-empty-function
-  };
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  const logout = useCallback(async () => {
+    setToken(null);
+    setUser(null);
+    await AsyncStorage.removeItem('auth_token');
+  }, []);
+
+  const refreshUser = useCallback(async () => {
+    if (!token) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/auth/me`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const json = await res.json();
+      if (json.ok) setUser(json.data);
+    } catch {
+      // ignore
+    }
+  }, [token]);
+
+  return (
+    <AuthContext.Provider value={{ user, token, isAuthenticated: !!token, isLoading, login, logout, refreshUser }}>
+      {children}
+    </AuthContext.Provider>
+  );
 };
 
 export const useAuth = (): AuthContextType => {
   const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error("useAuth must be used within an AuthProvider");
-  }
+  if (!context) throw new Error('useAuth must be used within AuthProvider');
   return context;
 };
