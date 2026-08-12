@@ -9,18 +9,24 @@ const API_BASE = process.env.EXPO_PUBLIC_BACKEND_BASE_URL || '';
 const CONSTELLATIONS = ['白羊座', '金牛座', '双子座', '巨蟹座', '狮子座', '处女座', '天秤座', '天蝎座', '射手座', '摩羯座', '水瓶座', '双鱼座'];
 const GENDERS = ['女', '男', '保密'];
 
-interface ProfileData {
-  public: Record<string, string>;
-  myInfo: Record<string, string>;
-  location: Record<string, string>;
-  contactMe: Record<string, string>;
-  likeAndDislike: Record<string, string>;
-}
-
 export default function ProfileScreen() {
-  const { token, refreshUser } = useAuth();
-  const [profile, setProfile] = useState<ProfileData | null>(null);
-  const [username, setUsername] = useState('');
+  const { token, user, loadStoredAuth } = useAuth();
+  const [formData, setFormData] = useState({
+    sign: '',
+    motto: '',
+    gender: '',
+    birthday: '',
+    constellation: '',
+    hometown: '',
+    nowLive: '',
+    qq: '',
+    wechat: '',
+    email: '',
+    phone: '',
+    myLikeThing: '',
+    beGoodAt: '',
+  });
+  const [loaded, setLoaded] = useState(false);
 
   const fetchProfile = useCallback(async () => {
     if (!token) return;
@@ -30,8 +36,23 @@ export default function ProfileScreen() {
       });
       const json = await res.json();
       if (json.ok) {
-        setProfile(json.data);
-        setUsername(json.data.username || '');
+        const d = json.data;
+        setFormData({
+          sign: d.public?.Sign || '',
+          motto: d.myInfo?.Motto || '',
+          gender: d.myInfo?.Gender || '',
+          birthday: d.myInfo?.Birthday || '',
+          constellation: d.myInfo?.Constellation || '',
+          hometown: d.location?.Hometown || '',
+          nowLive: d.location?.NowLive || '',
+          qq: d.socialAccount?.QQ || '',
+          wechat: d.socialAccount?.WeChat || '',
+          email: d.contactMe?.Email || '',
+          phone: d.contactMe?.Phone || '',
+          myLikeThing: d.likeAndDislike?.MyLikeThing || '',
+          beGoodAt: d.likeAndDislike?.BeGoodAt || '',
+        });
+        setLoaded(true);
       }
     } catch {
       // ignore
@@ -40,35 +61,33 @@ export default function ProfileScreen() {
 
   useFocusEffect(useCallback(() => { fetchProfile(); }, [fetchProfile]));
 
-  const handleSave = async (field: string, value: string) => {
+  const handleSave = async () => {
     try {
       const res = await fetch(`${API_BASE}/api/v1/profile`, {
-        method: 'POST',
+        method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ field, value }),
+        body: JSON.stringify(formData),
       });
       const json = await res.json();
       if (json.ok) {
-        refreshUser();
+        Alert.alert('保存成功', '个人资料已更新');
+        loadStoredAuth();
+      } else {
+        Alert.alert('保存失败', json.msg || '请重试');
       }
     } catch {
-      // ignore
+      Alert.alert('网络错误', '请检查网络连接');
     }
   };
 
-  const updateProfileField = (group: keyof ProfileData, key: string, value: string) => {
-    if (!profile) return;
-    setProfile({
-      ...profile,
-      [group]: { ...profile[group], [key]: value },
-    });
-    handleSave(`${group}.${key}`, value);
+  const updateField = (key: string, value: string) => {
+    setFormData(prev => ({ ...prev, [key]: value }));
   };
 
-  if (!profile) {
+  if (!loaded) {
     return (
       <Screen>
         <View style={styles.container}>
@@ -78,41 +97,19 @@ export default function ProfileScreen() {
     );
   }
 
-  const renderField = (label: string, group: keyof ProfileData, key: string, value?: string) => (
+  const genderLabel = formData.gender === '0' ? '女' : formData.gender === '1' ? '男' : formData.gender === '2' ? '保密' : '';
+  const constellationLabel = formData.constellation ? (CONSTELLATIONS[parseInt(formData.constellation)] || '') : '';
+
+  const renderField = (label: string, value: string, onChange: (v: string) => void) => (
     <View style={styles.fieldRow}>
       <Text style={styles.fieldLabel}>{label}</Text>
       <TextInput
         style={styles.fieldInput}
-        value={value || ''}
-        onChangeText={(v) => updateProfileField(group, key, v)}
+        value={value}
+        onChangeText={onChange}
         placeholderTextColor="#555"
         placeholder={`输入${label}`}
       />
-    </View>
-  );
-
-  const renderSection = (title: string, fields: { label: string; group: keyof ProfileData; key: string }[]) => (
-    <View style={styles.section}>
-      <Text style={styles.sectionTitle}>{title}</Text>
-      {fields.map((f) => {
-        const data = profile[f.group] || {};
-        return (
-          <View key={f.key}>
-            {f.label === '个性签名' ? renderField(f.label, f.group, f.key, data.Sign) : null}
-            {f.label === '座右铭' ? renderField(f.label, f.group, f.key, data.Motto) : null}
-            {f.label === '性别' ? renderField(f.label, f.group, f.key, data.Gender) : null}
-            {f.label === '生日' ? renderField(f.label, f.group, f.key, data.Birthday) : null}
-            {f.label === '星座' ? renderField(f.label, f.group, f.key, data.Constellation) : null}
-            {f.label === '家乡' ? renderField(f.label, f.group, f.key, data.Hometown) : null}
-            {f.label === '现居' ? renderField(f.label, f.group, f.key, data.NowLive) : null}
-            {f.label === 'QQ' ? renderField(f.label, f.group, f.key, data.QQ) : null}
-            {f.label === '微信' ? renderField(f.label, f.group, f.key, data.WeChat) : null}
-            {f.label === '邮箱' ? renderField(f.label, f.group, f.key, data.Email) : null}
-            {f.label === '喜欢的' ? renderField(f.label, f.group, f.key, data.MyLikeThing) : null}
-            {f.label === '擅长' ? renderField(f.label, f.group, f.key, data.BeGoodAt) : null}
-          </View>
-        );
-      })}
     </View>
   );
 
@@ -121,47 +118,61 @@ export default function ProfileScreen() {
       <ScrollView style={styles.container} contentContainerStyle={styles.scrollContent}>
         <View style={styles.header}>
           <Text style={styles.headerTitle}>编辑信息</Text>
-          <Text style={styles.headerSubtitle}>记录最真实的自己</Text>
+          <Text style={styles.headerSubtitle}>{user?.username || ''} - 记录最真实的自己</Text>
         </View>
 
-        {/* Username */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>基本信息</Text>
+          <Text style={styles.sectionTitle}>个人签名</Text>
+          {renderField('个性签名', formData.sign, (v) => updateField('sign', v))}
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>个人信息</Text>
+          {renderField('座右铭', formData.motto, (v) => updateField('motto', v))}
           <View style={styles.fieldRow}>
-            <Text style={styles.fieldLabel}>用户名</Text>
-            <TextInput
-              style={styles.fieldInput}
-              value={username}
-              onChangeText={setUsername}
-              placeholderTextColor="#555"
-            />
+            <Text style={styles.fieldLabel}>性别</Text>
+            <View style={{ flex: 1, flexDirection: 'row', justifyContent: 'flex-end', gap: 8 }}>
+              {GENDERS.map((g, i) => (
+                <TouchableOpacity
+                  key={g}
+                  style={[styles.genderBtn, genderLabel === g && styles.genderBtnActive]}
+                  onPress={() => updateField('gender', String(i))}
+                >
+                  <Text style={[styles.genderBtnText, genderLabel === g && styles.genderBtnTextActive]}>{g}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+          {renderField('生日', formData.birthday, (v) => updateField('birthday', v))}
+          <View style={styles.fieldRow}>
+            <Text style={styles.fieldLabel}>星座</Text>
+            <Text style={styles.fieldValue}>{constellationLabel || '未设置'}</Text>
           </View>
         </View>
 
-        {renderSection('个人签名', [{ label: '个性签名', group: 'public', key: 'Sign' }])}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>位置信息</Text>
+          {renderField('家乡', formData.hometown, (v) => updateField('hometown', v))}
+          {renderField('现居', formData.nowLive, (v) => updateField('nowLive', v))}
+        </View>
 
-        {renderSection('个人信息', [
-          { label: '座右铭', group: 'myInfo', key: 'Motto' },
-          { label: '性别', group: 'myInfo', key: 'Gender' },
-          { label: '生日', group: 'myInfo', key: 'Birthday' },
-          { label: '星座', group: 'myInfo', key: 'Constellation' },
-        ])}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>联系方式</Text>
+          {renderField('QQ', formData.qq, (v) => updateField('qq', v))}
+          {renderField('微信', formData.wechat, (v) => updateField('wechat', v))}
+          {renderField('邮箱', formData.email, (v) => updateField('email', v))}
+          {renderField('手机', formData.phone, (v) => updateField('phone', v))}
+        </View>
 
-        {renderSection('位置信息', [
-          { label: '家乡', group: 'location', key: 'Hometown' },
-          { label: '现居', group: 'location', key: 'NowLive' },
-        ])}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>喜好</Text>
+          {renderField('喜欢的', formData.myLikeThing, (v) => updateField('myLikeThing', v))}
+          {renderField('擅长', formData.beGoodAt, (v) => updateField('beGoodAt', v))}
+        </View>
 
-        {renderSection('联系方式', [
-          { label: 'QQ', group: 'contactMe', key: 'QQ' },
-          { label: '微信', group: 'contactMe', key: 'WeChat' },
-          { label: '邮箱', group: 'contactMe', key: 'Email' },
-        ])}
-
-        {renderSection('喜好', [
-          { label: '喜欢的', group: 'likeAndDislike', key: 'MyLikeThing' },
-          { label: '擅长', group: 'likeAndDislike', key: 'BeGoodAt' },
-        ])}
+        <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
+          <Text style={styles.saveBtnText}>保存修改</Text>
+        </TouchableOpacity>
 
         <View style={{ height: 40 }} />
       </ScrollView>
@@ -194,4 +205,19 @@ const styles = {
     flex: 1, fontSize: 14, color: '#f5e6c8',
     paddingVertical: 4, textAlign: 'right' as const,
   },
+  fieldValue: { flex: 1, fontSize: 14, color: 'rgba(245,230,200,0.4)', textAlign: 'right' as const },
+  genderBtn: {
+    paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12,
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  genderBtnActive: { backgroundColor: 'rgba(245,200,140,0.2)' },
+  genderBtnText: { fontSize: 12, color: 'rgba(245,230,200,0.5)' },
+  genderBtnTextActive: { color: '#f5c88c' },
+  saveBtn: {
+    marginHorizontal: 20, marginTop: 24, paddingVertical: 14,
+    backgroundColor: 'rgba(245,200,140,0.15)', borderRadius: 16,
+    borderWidth: 1, borderColor: 'rgba(245,200,140,0.3)',
+    alignItems: 'center' as const,
+  },
+  saveBtnText: { fontSize: 15, fontWeight: '600' as const, color: '#f5c88c', letterSpacing: 2 },
 };

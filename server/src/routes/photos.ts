@@ -1,228 +1,174 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 import multer from 'multer';
-import { db } from '../db.js';
+import { pool } from '../db.js';
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+
 const router = Router();
 
-/**
- * GET /api/v1/photos/albums
- * Headers: Authorization: Bearer <token>
- */
+function getToken(req: Request): string {
+  const authHeader = req.headers.authorization || '';
+  if (authHeader.startsWith('Bearer ')) {
+    return authHeader.slice(7);
+  }
+  return (req.query.token as string) || '';
+}
+
+async function getUserIdFromToken(token: string): Promise<number | null> {
+  const [rows] = await pool.query(
+    'SELECT `ID` FROM `xlch_user` WHERE `Token` = ?',
+    [token]
+  );
+  const user = (rows as any[])[0];
+  return user ? user.ID : null;
+}
+
+// GET /api/v1/photos/albums
 router.get('/albums', async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.json({ ok: false, msg: '未登录' });
-    const token = authHeader.replace('Bearer ', '');
-
-    const { data: users } = await db.from('users').select('id').eq('token', token).limit(1);
-    if (!users || users.length === 0) return res.json({ ok: false, msg: '未登录' });
-    const userId = users[0].id;
-
-    const { data: albums, error } = await db
-      .from('moon_albums')
-      .select('id, name, description, created_at')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
-    if (error) throw error;
-
-    const result = (albums || []).map((a: any) => ({
-      id: a.id,
-      name: a.name,
-      description: a.description,
-      createdAt: a.created_at,
+    const [rows] = await pool.query(
+      'SELECT a.*, (SELECT COUNT(*) FROM `moon_photo` WHERE `AlbumId` = a.`ID`) as photoCount FROM `moon_album` a ORDER BY a.`ID` ASC'
+    );
+    const albums = (rows as any[]).map((a) => ({
+      id: a.ID,
+      name: a.Name,
+      description: a.Description,
+      photoCount: a.photoCount || 0,
+      createdAt: a.CreatedAt,
     }));
-
-    res.json({ ok: true, data: result });
+    return res.json({ ok: true, data: albums });
   } catch (err: any) {
-    console.error('Albums list error:', err);
-    res.json({ ok: false, msg: '服务器错误' });
+    return res.json({ ok: false, msg: err.message });
   }
 });
 
-/**
- * POST /api/v1/photos/albums
- * Headers: Authorization: Bearer <token>
- * Body: { name: string, description?: string }
- */
+// POST /api/v1/photos/albums
 router.post('/albums', async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.json({ ok: false, msg: '未登录' });
-    const token = authHeader.replace('Bearer ', '');
-
-    const { data: users } = await db.from('users').select('id').eq('token', token).limit(1);
-    if (!users || users.length === 0) return res.json({ ok: false, msg: '未登录' });
-    const userId = users[0].id;
+    const token = getToken(req);
+    const userId = await getUserIdFromToken(token);
+    if (!userId) return res.json({ ok: false, msg: '未登录' });
 
     const { name, description } = req.body;
     if (!name) return res.json({ ok: false, msg: '相册名称不能为空' });
 
-    const { data: inserted, error } = await db
-      .from('moon_albums')
-      .insert({ user_id: userId, name, description: description || '' })
-      .select()
-      .single();
-    if (error) throw error;
-
-    res.json({ ok: true, data: { id: inserted.id, name: inserted.name } });
+    const [result] = await pool.query(
+      'INSERT INTO `moon_album` (`Name`, `Description`) VALUES (?, ?)',
+      [name, description || '']
+    );
+    return res.json({ ok: true, data: { id: (result as any).insertId }, msg: '相册已创建' });
   } catch (err: any) {
-    console.error('Album create error:', err);
-    res.json({ ok: false, msg: '服务器错误' });
+    return res.json({ ok: false, msg: err.message });
   }
 });
 
-/**
- * GET /api/v1/photos/albums/:id
- * Headers: Authorization: Bearer <token>
- * Path: id: number
- */
+// GET /api/v1/photos/albums/:id
 router.get('/albums/:id', async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.json({ ok: false, msg: '未登录' });
-    const token = authHeader.replace('Bearer ', '');
-
-    const { data: users } = await db.from('users').select('id').eq('token', token).limit(1);
-    if (!users || users.length === 0) return res.json({ ok: false, msg: '未登录' });
-    const userId = users[0].id;
-
-    const albumId = parseInt(req.params.id as string);
-
-    const { data: album, error: albumError } = await db
-      .from('moon_albums')
-      .select('id, name, description')
-      .eq('id', albumId)
-      .eq('user_id', userId)
-      .maybeSingle();
-    if (albumError) throw albumError;
-    if (!album) return res.json({ ok: false, msg: '相册不存在' });
-
-    const { data: photos, error: photosError } = await db
-      .from('moon_photos')
-      .select('id, file_name, original_name, url, title, description, created_at')
-      .eq('user_id', userId)
-      .eq('album_id', albumId)
-      .order('created_at', { ascending: false });
-    if (photosError) throw photosError;
-
-    res.json({
-      ok: true,
-      data: {
-        album: { id: album.id, name: album.name, description: album.description },
-        photos: (photos || []).map((p: any) => ({
-          id: p.id,
-          fileName: p.file_name,
-          originalName: p.original_name,
-          url: p.url,
-          title: p.title,
-          description: p.description,
-          createdAt: p.created_at,
-        })),
-      },
-    });
+    const id = parseInt(req.params.id as string, 10);
+    const [rows] = await pool.query(
+      'SELECT * FROM `moon_photo` WHERE `AlbumId` = ? ORDER BY `ID` DESC',
+      [id]
+    );
+    const photos = (rows as any[]).map((p) => ({
+      id: p.ID,
+      fileName: p.FileName,
+      originalName: p.OriginalName,
+      url: p.Url,
+      title: p.Title,
+      description: p.Description,
+      albumId: p.AlbumId,
+      createdAt: p.CreatedAt,
+    }));
+    return res.json({ ok: true, data: photos });
   } catch (err: any) {
-    console.error('Album detail error:', err);
-    res.json({ ok: false, msg: '服务器错误' });
+    return res.json({ ok: false, msg: err.message });
   }
 });
 
-/**
- * POST /api/v1/photos/upload
- * Headers: Authorization: Bearer <token>
- * FormData: file, albumId, title?, description?
- */
+// POST /api/v1/photos/upload
 router.post('/upload', upload.single('file'), async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.json({ ok: false, msg: '未登录' });
-    const token = authHeader.replace('Bearer ', '');
-
-    const { data: users } = await db.from('users').select('id').eq('token', token).limit(1);
-    if (!users || users.length === 0) return res.json({ ok: false, msg: '未登录' });
-    const userId = users[0].id;
+    const token = getToken(req);
+    const userId = await getUserIdFromToken(token);
+    if (!userId) return res.json({ ok: false, msg: '未登录' });
 
     const file = req.file;
     if (!file) return res.json({ ok: false, msg: '请选择图片' });
 
-    const albumId = parseInt(req.body.albumId || '0');
-    const title = req.body.title || '';
+    const albumId = parseInt(req.body.albumId || '0', 10);
+    const title = req.body.title || file.originalname;
     const description = req.body.description || '';
 
-    // Store as base64 data URL (for simplicity in this app)
-    const base64 = file.buffer.toString('base64');
-    const mimeType = file.mimetype;
-    const dataUrl = `data:${mimeType};base64,${base64}`;
+    // Store as base64 data URL for now (in production, use object storage)
+    const base64 = `data:${file.mimetype};base64,${file.buffer.toString('base64')}`;
+    const fileName = `${Date.now()}_${file.originalname}`;
 
-    const { data: inserted, error } = await db
-      .from('moon_photos')
-      .insert({
-        user_id: userId,
-        file_name: file.originalname,
-        original_name: file.originalname,
-        url: dataUrl,
-        title,
-        description,
-        album_id: albumId,
-      })
-      .select()
-      .single();
-    if (error) throw error;
+    const [result] = await pool.query(
+      'INSERT INTO `moon_photo` (`FileName`, `OriginalName`, `Url`, `Title`, `Description`, `AlbumId`, `CreatedAt`) VALUES (?, ?, ?, ?, ?, ?, NOW())',
+      [fileName, file.originalname, base64, title, description, albumId]
+    );
 
-    res.json({
+    return res.json({
       ok: true,
-      data: {
-        id: inserted.id,
-        fileName: inserted.file_name,
-        url: inserted.url,
-        title: inserted.title,
-      },
+      data: { id: (result as any).insertId, url: base64 },
+      msg: '图片已上传',
     });
   } catch (err: any) {
-    console.error('Photo upload error:', err);
-    res.json({ ok: false, msg: '上传失败' });
+    return res.json({ ok: false, msg: err.message });
   }
 });
 
-/**
- * GET /api/v1/photos/timeline
- * Returns the image timeline data
- */
-router.get('/timeline', async (req: Request, res: Response) => {
+// GET /api/v1/photos/timeline
+router.get('/timeline', async (_req: Request, res: Response) => {
   try {
-    const { data: timeline, error } = await db
-      .from('image_timeline')
-      .select('id, dir_id, title, description, date_label, sort_date, image_url')
-      .order('sort_date', { ascending: false });
-    if (error) throw error;
+    const [rows] = await pool.query(
+      'SELECT i.*, d.`Name` as dirName FROM `xlch_image` i LEFT JOIN `xlch_image_dir` d ON i.`DirId` = d.`ID` ORDER BY i.`AddDate` DESC'
+    );
 
-    // Group by dir_id
-    const grouped: Record<string, { title: string; description: string; dateLabel: string; images: string[] }> = {};
-    for (const item of (timeline || []) as any[]) {
-      const key = String(item.dir_id);
-      if (!grouped[key]) {
-        grouped[key] = {
-          title: item.title,
-          description: item.description,
-          dateLabel: item.date_label,
-          images: [],
-        };
-      }
-      grouped[key].images.push(item.image_url);
-    }
+    // Group by date
+    const groups: Record<string, any[]> = {};
+    (rows as any[]).forEach((img) => {
+      const dateStr = img.AddDate ? new Date(img.AddDate).toISOString().split('T')[0] : 'unknown';
+      if (!groups[dateStr]) groups[dateStr] = [];
+      groups[dateStr].push({
+        id: img.ID,
+        url: img.Url,
+        name: img.Name,
+        dirName: img.dirName || '',
+        date: dateStr,
+      });
+    });
 
-    const result = Object.values(grouped).map((g) => ({
-      title: g.title,
-      description: g.description,
-      dateLabel: g.dateLabel,
-      images: g.images,
-    }));
+    const timeline = Object.entries(groups)
+      .sort(([a], [b]) => b.localeCompare(a))
+      .map(([date, images]) => ({ date, images }));
 
-    res.json({ ok: true, data: result });
+    return res.json({ ok: true, data: timeline });
   } catch (err: any) {
-    console.error('Timeline error:', err);
-    res.json({ ok: false, msg: '服务器错误' });
+    return res.json({ ok: false, msg: err.message });
+  }
+});
+
+// GET /api/v1/photos/dirs
+router.get('/dirs', async (_req: Request, res: Response) => {
+  try {
+    const [rows] = await pool.query(
+      'SELECT d.*, (SELECT COUNT(*) FROM `xlch_image` WHERE `DirId` = d.`ID`) as imageCount FROM `xlch_image_dir` d ORDER BY d.`AddDate` DESC'
+    );
+    const dirs = (rows as any[]).map((d) => ({
+      id: d.ID,
+      name: d.Name,
+      bewrite: d.Bewrite,
+      createrId: d.CreaterId,
+      anybodyUpload: d.AnybodyUpload,
+      imageCount: d.imageCount || 0,
+      addDate: d.AddDate,
+    }));
+    return res.json({ ok: true, data: dirs });
+  } catch (err: any) {
+    return res.json({ ok: false, msg: err.message });
   }
 });
 

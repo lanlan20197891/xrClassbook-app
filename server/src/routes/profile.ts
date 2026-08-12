@@ -1,130 +1,109 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { db } from '../db.js';
+import { pool } from '../db.js';
 
 const router = Router();
 
-/**
- * GET /api/v1/profile
- * Headers: Authorization: Bearer <token>
- */
+function getToken(req: Request): string {
+  const authHeader = req.headers.authorization || '';
+  if (authHeader.startsWith('Bearer ')) {
+    return authHeader.slice(7);
+  }
+  return (req.query.token as string) || '';
+}
+
+// GET /api/v1/profile
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.json({ ok: false, msg: '未登录' });
-    const token = authHeader.replace('Bearer ', '');
+    const token = getToken(req);
+    if (!token) {
+      return res.json({ ok: false, msg: '未登录' });
+    }
 
-    const { data: users, error } = await db
-      .from('users')
-      .select('id, username, user_group, user_data, head_url')
-      .eq('token', token)
-      .limit(1);
-    if (error) throw error;
-    if (!users || users.length === 0) return res.json({ ok: false, msg: '未登录' });
+    const [rows] = await pool.query(
+      'SELECT * FROM `xlch_user` WHERE `Token` = ?',
+      [token]
+    );
+    const user = (rows as any[])[0];
+    if (!user) {
+      return res.json({ ok: false, msg: '登录已过期' });
+    }
 
-    const u = users[0];
-    const ud = (u.user_data || {}) as any;
+    let userData = {};
+    try {
+      userData = user.UserData ? JSON.parse(user.UserData) : {};
+    } catch { /* ignore */ }
 
-    res.json({
+    return res.json({
       ok: true,
       data: {
-        id: u.id,
-        username: u.username,
-        userGroup: u.user_group,
-        headUrl: u.head_url,
-        public: ud.Public || {},
-        myInfo: ud.MyInfo || {},
-        location: ud.Location || {},
-        contactMe: ud.ContactMe || {},
-        likeAndDislike: ud.LikeAndDislike || {},
+        id: user.ID,
+        username: user.Username,
+        headUrl: user.HeadUrl,
+        group: user.Group,
+        userData,
       },
     });
   } catch (err: any) {
-    console.error('Profile get error:', err);
-    res.json({ ok: false, msg: '服务器错误' });
+    return res.json({ ok: false, msg: err.message });
   }
 });
 
-/**
- * POST /api/v1/profile
- * Headers: Authorization: Bearer <token>
- * Body: { field: string, value: string }
- */
-router.post('/', async (req: Request, res: Response) => {
+// PUT /api/v1/profile
+router.put('/', async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.json({ ok: false, msg: '未登录' });
-    const token = authHeader.replace('Bearer ', '');
-
-    const { data: users } = await db.from('users').select('id, user_data').eq('token', token).limit(1);
-    if (!users || users.length === 0) return res.json({ ok: false, msg: '未登录' });
-
-    const user = users[0];
-    const { field, value } = req.body;
-
-    if (!field || value === undefined) {
-      return res.json({ ok: false, msg: '参数不完整' });
+    const token = getToken(req);
+    if (!token) {
+      return res.json({ ok: false, msg: '未登录' });
     }
 
-    const userData = (user.user_data || {}) as any;
-    const parts = field.split('.');
-
-    if (parts.length >= 2) {
-      const [group, key] = parts;
-      if (!userData[group]) userData[group] = {};
-      userData[group][key] = value;
-    } else {
-      return res.json({ ok: false, msg: '无效的字段名' });
+    const [rows] = await pool.query(
+      'SELECT `ID`, `UserData` FROM `xlch_user` WHERE `Token` = ?',
+      [token]
+    );
+    const user = (rows as any[])[0];
+    if (!user) {
+      return res.json({ ok: false, msg: '登录已过期' });
     }
 
-    const { error } = await db.from('users').update({ user_data: userData }).eq('id', user.id);
-    if (error) throw error;
+    let userData = {};
+    try {
+      userData = user.UserData ? JSON.parse(user.UserData) : {};
+    } catch { /* ignore */ }
 
-    res.json({ ok: true });
+    const ud = userData as any;
+    const { sign, birthday, gender, constellation, motto, hometown, nowLive, qq, wechat, email, phone, myLikeThing, beGoodAt } = req.body;
+
+    // Update UserData JSON
+    if (!ud.Public) ud.Public = {};
+    if (!ud.MyInfo) ud.MyInfo = {};
+    if (!ud.Location) ud.Location = {};
+    if (!ud.ContactMe) ud.ContactMe = {};
+    if (!ud.SocialAccount) ud.SocialAccount = {};
+    if (!ud.LikeAndDislike) ud.LikeAndDislike = {};
+
+    if (sign !== undefined) ud.Public.Sign = sign;
+    if (birthday !== undefined) ud.MyInfo.Birthday = birthday;
+    if (gender !== undefined) ud.MyInfo.Gender = gender;
+    if (constellation !== undefined) ud.MyInfo.Constellation = constellation;
+    if (motto !== undefined) ud.MyInfo.Motto = motto;
+    if (hometown !== undefined) ud.Location.Hometown = hometown;
+    if (nowLive !== undefined) ud.Location.NowLive = nowLive;
+    if (qq !== undefined) ud.SocialAccount.QQ = qq;
+    if (wechat !== undefined) ud.SocialAccount.WeChat = wechat;
+    if (email !== undefined) ud.ContactMe.Email = email;
+    if (phone !== undefined) ud.ContactMe.Phone = phone;
+    if (myLikeThing !== undefined) ud.LikeAndDislike.MyLikeThing = myLikeThing;
+    if (beGoodAt !== undefined) ud.LikeAndDislike.BeGoodAt = beGoodAt;
+
+    await pool.query(
+      'UPDATE `xlch_user` SET `UserData` = ? WHERE `ID` = ?',
+      [JSON.stringify(ud), user.ID]
+    );
+
+    return res.json({ ok: true, msg: '资料已更新', data: { userData: ud } });
   } catch (err: any) {
-    console.error('Profile update error:', err);
-    res.json({ ok: false, msg: '服务器错误' });
-  }
-});
-
-/**
- * POST /api/v1/profile/update-multiple
- * Headers: Authorization: Bearer <token>
- * Body: { fields: Array<{ field: string, value: string }> }
- */
-router.post('/update-multiple', async (req: Request, res: Response) => {
-  try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.json({ ok: false, msg: '未登录' });
-    const token = authHeader.replace('Bearer ', '');
-
-    const { data: users } = await db.from('users').select('id, user_data').eq('token', token).limit(1);
-    if (!users || users.length === 0) return res.json({ ok: false, msg: '未登录' });
-
-    const user = users[0];
-    const { fields } = req.body;
-
-    if (!Array.isArray(fields)) {
-      return res.json({ ok: false, msg: '参数格式错误' });
-    }
-
-    const userData = (user.user_data || {}) as any;
-    for (const { field, value } of fields) {
-      const parts = field.split('.');
-      if (parts.length >= 2) {
-        const [group, key] = parts;
-        if (!userData[group]) userData[group] = {};
-        userData[group][key] = value;
-      }
-    }
-
-    const { error } = await db.from('users').update({ user_data: userData }).eq('id', user.id);
-    if (error) throw error;
-
-    res.json({ ok: true });
-  } catch (err: any) {
-    console.error('Profile batch update error:', err);
-    res.json({ ok: false, msg: '服务器错误' });
+    return res.json({ ok: false, msg: err.message });
   }
 });
 

@@ -13,7 +13,7 @@ export default function TabLayout() {
     '--color-border',
   ]) as string[];
 
-  let tabBarStyle = {
+  const tabBarStyle: Record<string, any> = {
     backgroundColor: '#0d1117',
     borderTopWidth: 1,
     borderTopColor: 'rgba(245,230,200,0.08)',
@@ -21,10 +21,7 @@ export default function TabLayout() {
   };
 
   if (Platform.OS === 'web') {
-    tabBarStyle = {
-      ...tabBarStyle,
-      height: 'auto',
-    };
+    tabBarStyle.height = 'auto';
   }
 
   return (

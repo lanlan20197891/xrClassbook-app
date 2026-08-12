@@ -1,177 +1,104 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { db } from '../db.js';
-import { RELATION_CATEGORIES } from '../constants.js';
+import { pool } from '../db.js';
 
 const router = Router();
 
-/**
- * GET /api/v1/relations/moon
- * Headers: Authorization: Bearer <token>
- */
+// Helper to get userId from token
+async function getUserIdFromToken(token: string): Promise<number | null> {
+  const [rows] = await pool.query(
+    'SELECT `ID` FROM `xlch_user` WHERE `Token` = ?',
+    [token]
+  );
+  const user = (rows as any[])[0];
+  return user ? user.ID : null;
+}
+
+function getToken(req: Request): string {
+  const authHeader = req.headers.authorization || '';
+  if (authHeader.startsWith('Bearer ')) {
+    return authHeader.slice(7);
+  }
+  return (req.query.token as string) || '';
+}
+
+// GET /api/v1/relations/moon
 router.get('/moon', async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.json({ ok: false, msg: '未登录' });
-    const token = authHeader.replace('Bearer ', '');
+    const token = getToken(req);
+    const userId = await getUserIdFromToken(token);
+    if (!userId) {
+      return res.json({ ok: false, msg: '未登录' });
+    }
 
-    const { data: users } = await db.from('users').select('id').eq('token', token).limit(1);
-    if (!users || users.length === 0) return res.json({ ok: false, msg: '未登录' });
-    const userId = users[0].id;
+    const [rows] = await pool.query(
+      'SELECT * FROM `moon_relation` WHERE `UserID` = ? ORDER BY `ID` ASC',
+      [userId]
+    );
 
-    const { data: relations, error } = await db
-      .from('moon_relations')
-      .select('id, target_id, category, pos_x, pos_y, custom_name, custom_note')
-      .eq('user_id', userId);
-    if (error) throw error;
-
-    const result = (relations || []).map((r: any) => ({
-      id: r.id,
-      targetId: r.target_id,
-      category: r.category,
-      posX: r.pos_x,
-      posY: r.pos_y,
-      customName: r.custom_name,
-      customNote: r.custom_note,
+    const relations = (rows as any[]).map((r) => ({
+      id: r.ID,
+      userId: r.UserID,
+      targetId: r.TargetID,
+      category: r.Category,
+      posX: r.PosX,
+      posY: r.PosY,
+      customName: r.CustomName,
+      customNote: r.CustomNote,
+      createdAt: r.CreatedAt,
+      updatedAt: r.UpdatedAt,
     }));
 
-    res.json({ ok: true, data: result });
+    return res.json({ ok: true, data: relations });
   } catch (err: any) {
-    console.error('Moon relations error:', err);
-    res.json({ ok: false, msg: '服务器错误' });
+    return res.json({ ok: false, msg: err.message });
   }
 });
 
-/**
- * GET /api/v1/relations/categories
- */
-router.get('/categories', async (_req: Request, res: Response) => {
-  res.json({ ok: true, data: RELATION_CATEGORIES });
-});
-
-/**
- * GET /api/v1/relations/by-category
- * Headers: Authorization: Bearer <token>
- */
-router.get('/by-category', async (req: Request, res: Response) => {
+// POST /api/v1/relations/moon
+router.post('/moon', async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.json({ ok: false, msg: '未登录' });
-    const token = authHeader.replace('Bearer ', '');
-
-    const { data: users } = await db.from('users').select('id').eq('token', token).limit(1);
-    if (!users || users.length === 0) return res.json({ ok: false, msg: '未登录' });
-    const userId = users[0].id;
-
-    const { data: relations, error } = await db
-      .from('moon_relations')
-      .select('id, target_id, category, pos_x, pos_y, custom_name, custom_note')
-      .eq('user_id', userId);
-    if (error) throw error;
-
-    const grouped: Record<string, any[]> = {};
-    for (const cat of RELATION_CATEGORIES) {
-      grouped[cat.key] = [];
-    }
-    grouped['uncategorized'] = [];
-
-    const categorizedIds = new Set<number>();
-    for (const r of relations || []) {
-      const cat = r.category;
-      if (grouped[cat]) {
-        grouped[cat].push({
-          id: r.id,
-          targetId: r.target_id,
-          posX: r.pos_x,
-          posY: r.pos_y,
-          customName: r.custom_name,
-          customNote: r.custom_note,
-        });
-        categorizedIds.add(r.target_id);
-      }
+    const token = getToken(req);
+    const userId = await getUserIdFromToken(token);
+    if (!userId) {
+      return res.json({ ok: false, msg: '未登录' });
     }
 
-    // Get all active students
-    const { data: allStudents } = await db
-      .from('users')
-      .select('id, username, user_group, user_data, head_url')
-      .eq('status', 'On')
-      .neq('user_group', 'Admin');
+    const { targetId, category, posX, posY, customName, customNote } = req.body;
 
-    const uncategorized = (allStudents || [])
-      .filter((s: any) => !categorizedIds.has(s.id))
-      .map((s: any) => ({
-        id: s.id,
-        username: s.username,
-        userGroup: s.user_group,
-        headUrl: s.head_url,
-        userData: s.user_data || {},
-      }));
+    await pool.query(
+      `INSERT INTO \`moon_relation\` (\`UserID\`, \`TargetID\`, \`Category\`, \`PosX\`, \`PosY\`, \`CustomName\`, \`CustomNote\`, \`CreatedAt\`, \`UpdatedAt\`)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), NOW())`,
+      [userId, targetId || 0, category || 'classmate', posX || 0, posY || 0, customName || '', customNote || '']
+    );
 
-    grouped['uncategorized'] = uncategorized;
-
-    res.json({ ok: true, data: grouped });
+    return res.json({ ok: true, msg: '关系已添加' });
   } catch (err: any) {
-    console.error('Relations by category error:', err);
-    res.json({ ok: false, msg: '服务器错误' });
+    return res.json({ ok: false, msg: err.message });
   }
 });
 
-/**
- * POST /api/v1/relations/update
- * Headers: Authorization: Bearer <token>
- * Body: { targetId: number, category: string, posX?: number, posY?: number }
- */
-router.post('/update', async (req: Request, res: Response) => {
+// PUT /api/v1/relations/moon/:id
+router.put('/moon/:id', async (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return res.json({ ok: false, msg: '未登录' });
-    const token = authHeader.replace('Bearer ', '');
-
-    const { data: users } = await db.from('users').select('id').eq('token', token).limit(1);
-    if (!users || users.length === 0) return res.json({ ok: false, msg: '未登录' });
-    const userId = users[0].id;
-
-    const { targetId, category, posX, posY } = req.body;
-    if (!targetId || !category) {
-      return res.json({ ok: false, msg: '参数不完整' });
+    const token = getToken(req);
+    const userId = await getUserIdFromToken(token);
+    if (!userId) {
+      return res.json({ ok: false, msg: '未登录' });
     }
 
-    // Check if relation exists
-    const { data: existing } = await db
-      .from('moon_relations')
-      .select('id')
-      .eq('user_id', userId)
-      .eq('target_id', targetId)
-      .limit(1);
+    const id = parseInt(req.params.id as string, 10);
+    const { category, posX, posY, customName, customNote } = req.body;
 
-    if (existing && existing.length > 0) {
-      const updateData: any = { category, updated_at: new Date().toISOString() };
-      if (posX !== undefined) updateData.pos_x = posX;
-      if (posY !== undefined) updateData.pos_y = posY;
+    await pool.query(
+      `UPDATE \`moon_relation\` SET \`Category\` = ?, \`PosX\` = ?, \`PosY\` = ?, \`CustomName\` = ?, \`CustomNote\` = ?, \`UpdatedAt\` = NOW()
+       WHERE \`ID\` = ? AND \`UserID\` = ?`,
+      [category || 'classmate', posX, posY, customName || '', customNote || '', id, userId]
+    );
 
-      const { error } = await db
-        .from('moon_relations')
-        .update(updateData)
-        .eq('id', existing[0].id);
-      if (error) throw error;
-    } else {
-      const { error } = await db
-        .from('moon_relations')
-        .insert({
-          user_id: userId,
-          target_id: targetId,
-          category,
-          pos_x: posX || null,
-          pos_y: posY || null,
-        });
-      if (error) throw error;
-    }
-
-    res.json({ ok: true });
+    return res.json({ ok: true, msg: '关系已更新' });
   } catch (err: any) {
-    console.error('Relation update error:', err);
-    res.json({ ok: false, msg: '服务器错误' });
+    return res.json({ ok: false, msg: err.message });
   }
 });
 
